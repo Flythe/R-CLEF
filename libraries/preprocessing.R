@@ -190,9 +190,11 @@ cleanMyText <- function(original_text, stem, gram) {
   return(result)
 }
 
-addIDs <- function(corpus) {
-  for (i in 1:length(corpus)) {
-    corpus[[i]]$meta$id = i
+addIDs <- function(corpus, metadata) {
+  for (i in 1:length(corpus$content)) {
+    corpus$content[[i]]$meta$id <- i
+    corpus$content[[i]]$meta$pid <- metadata[i,1]
+    corpus$content[[i]]$meta$reviewid <- metadata[i,2]
   }
 
   return(corpus)
@@ -203,9 +205,9 @@ readCSV <- function(csv_location) {
     stop("Corpus file not found")
   }
 
-  text <- as.matrix(read.csv(file = csv_location, header = FALSE, quote = "")[1])
+  data <- as.matrix(read.csv(file = csv_location, header = FALSE, quote = ""))
 
-  return(text)
+  return(data)
 }
 
 runPreprocessing <- function(csv_location, stem = TRUE, gram = TRUE) {
@@ -217,14 +219,16 @@ runPreprocessing <- function(csv_location, stem = TRUE, gram = TRUE) {
   suppressMessages(library(stringr))
   suppressMessages(library(methods))
 
-  documents <- readCSV(csv_location)
+  data <- readCSV(csv_location)
+
+  documents <- data[,1]
 
   # Start!
   print("Starting cleaning process.")
   clean_corpus <- cleanMyText(documents, stem, gram)
 
   print("Cleaning: add back document ids.")
-  clean_corpus <- addIDs(clean_corpus)
+  clean_corpus <- addIDs(clean_corpus, data[,2:3])
 
   return(clean_corpus)
 }
@@ -290,4 +294,12 @@ setupPreprocessing <- function(project_name, csv_name) {
   }
 
   return(clean_corpus)
+}
+
+appendIncludes <- function(corpus, includes) {
+  for (i in 1:length(corpus$content)) {
+    corpus$content[[i]]$meta$included <- i %in% includes
+  }
+
+  return(corpus)
 }

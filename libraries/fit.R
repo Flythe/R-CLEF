@@ -84,9 +84,9 @@ TmLDASimulation <- function(corpus, project_name, file_version, k, alpha, beta, 
   pids <- vector("list", length(corpus))
   review_ids <- vector("list", length(corpus))
 
-  for (i in 1:length(corpus)) {
-    pids[i] <- as.numeric(corpus[[i]]$meta$pid)
-    review_ids[i] <- as.character(corpus[[i]]$meta$reviewid)
+  for (i in 1:length(corpus$content)) {
+    pids[i] <- as.numeric(corpus$content[[i]]$meta$pid)
+    review_ids[i] <- as.character(corpus$content[[i]]$meta$reviewid)
   }
 
   print("building dtm")

@@ -30,48 +30,38 @@ singleFoldForest <- function(data, includes, training_selection, datasets_locati
   return(results)
 }
 
-crossFoldForest <- function(data, includes, datasets_location, file_version, set_num) {
+crossFoldForest <- function(data, includes, datasets_location, file_version) {
   # Create include/exclude list
   print("Formatting inputs")
-  input <- formatInput(data, includes, datasets_location)
+  input <- formatInput(data, includes)
 
   # Create training folds
   print("Creating folds")
-  trainFolds <- createFolds(y = input$Class, k = length(rf_folds), list = FALSE)
+  train_folds <- createDataPartition(y = input$Class, times = rf_folds, list = TRUE)
 
-  val_list <- list()
-
-  print("Starting forest folds")
-
-  val_list <- mclapply(rf_folds, function(i) {
-    # Create test and train set for this fold
-    testing <- input[trainFolds == i,]
-    training <- input[trainFolds != i,]
-
-    # Train forest
-    rf <- trainForest(training, set_num)
-
-    # Store output metrics into list
-    return(getMetrics(rf, testing))
-  }, mc.cores = parallel_cores, mc.silent = parallel_silent)
+  temp_file_list <- vector("list", length = length(train_folds))
 
   # Fit folds
-  # for (i in rf_folds) {
-  #   # Create test and train set for this fold
-  #   testing <- input[trainFolds == i,]
-  #   training <- input[trainFolds != i,]
-  #
-  #   # Train forest
-  #   rf <- trainForest(training, set_num)
-  #
-  #   # Store output metrics into list
-  #   val_list[[i]] <- getMetrics(rf, testing)
-  # }
+  for (i in 1:length(train_folds)) {
+    # Create test and train set for this fold
+    # testing <- input[train_folds[[i]],]
+    # training <- input[-train_folds[[i]],]
 
-  return(val_list)
+    # Train forest
+    rf <- trainForest(input)
+
+    # Store output metrics into list
+    temp_file_list[[i]] <- tempfile(fileext = ".rds")
+
+    saveRDS(getMetrics(rf, testing), temp_file_list[[i]])
+
+    rm(rf)
+  }
+
+  return(temp_file_list)
 }
 
-trainForest <- function(training, set_num) {
+trainForest <- function(training) {
   print("Training forest")
 
   # Count the number of includes in the training portion
@@ -80,22 +70,23 @@ trainForest <- function(training, set_num) {
   # Create control variable, set to cross validate
   ctrl <- trainControl(method = "cv",
                        classProbs = TRUE,
-                       summaryFunction = twoClassSummary)
+                       summaryFunction = twoClassSummary,
+                       verboseIter = TRUE)
 
-  mtry <- getMtry(set_num)
+  mtry <- getMtry(length(training[1,]) - 1)
 
   tunegrid <- expand.grid(.mtry = mtry)
 
   # Parallel RFs
   if (rf_parallel) {
-    # registerDoMC(cores = parallel_cores)
+    registerDoMC(cores = parallel_cores)
   }
 
   training_cleaned <- training[ , !(names(training) %in% c('PID', 'reviewID'))]
 
   rf <- train(Class ~ ., data = training_cleaned,
               method = "rf",
-              ntree = 1500,
+              ntree = rf_ntree,
               tuneGrid = tunegrid,
               metric = "ROC",
               trControl = ctrl,
@@ -105,7 +96,7 @@ trainForest <- function(training, set_num) {
   return(rf)
 }
 
-setupForest <- function(dataset, includes, data_location, file_version, folds = FALSE, training_selection = FALSE) {
+setupForest <- function(input_matrix, includes, data_location, file_version, folds = FALSE, training_selection = FALSE) {
   # DIRECTORY TESTING
   if (!dir.exists(data_location)) {
     stop("Data directory does not exist")
@@ -140,11 +131,19 @@ setupForest <- function(dataset, includes, data_location, file_version, folds = 
     if (folds == TRUE) {
       print("Fitting a new CROSS FOLD random forest")
 
-      fit_data <- crossFoldForest(dataset, includes, data_location, file_version, dataset$numberOfTopics)
+      file_list <- crossFoldForest(input_matrix, includes, data_location, file_version)
+
+      fit_data <- vector("list", length = length(file_list))
+
+      for (i in 1:length(file_list)) {
+        fit_data[[i]] <- readRDS(file_list[[i]])
+
+        unlink(file_list[[i]])
+      }
     } else {
       print("Fitting a new SINGLE random forest")
 
-      fit_data <- singleFoldForest(dataset, includes, training_selection, data_location, file_version, dataset$numberOfTopics)
+      fit_data <- singleFoldForest(input_matrix, includes, training_selection, data_location, file_version, dataset$numberOfTopics)
     }
 
     if (rf_store) {
@@ -159,23 +158,20 @@ setupForest <- function(dataset, includes, data_location, file_version, folds = 
   return(fit_data)
 }
 
-formatInput <- function(data, includes, folder) {
-  thetas <- data$posterior$theta
+formatInput <- function(input_matrix, includes) {
+  data <- as.data.frame(as.matrix(input_matrix))
 
   # Create include/exclude factor
-  y <- vector(length = length(thetas[,1]))
+  y <- vector(length = length(data[,1]))
   y[] <- 'exclude'
   y[includes] <- 'include'
 
   y <- factor(y)
 
   # Create data frame out of thetas
-  input <- data.frame(X = thetas)
+  input <- data.frame(X = data)
   # Append the factor
   input$Class <- y
-
-  input$PID <- data$pids
-  input$reviewID <- data$review_ids
 
   return(input)
 }
@@ -204,39 +200,41 @@ getMetricsForFile <- function(project_name, file_version, set_num, fold_type = "
 }
 
 getMetrics <- function(rf, test_set) {
-  prob_test_set <- test_set[, !names(test_set) %in% c("PID", "reviewID")]
+  # prob_test_set <- test_set[, !names(test_set) %in% c("PID", "reviewID")]
+  #
+  # rf_probs <- predict(rf, prob_test_set, type = "prob")
+  #
+  # ROC <- roc(response = test_set$Class,
+  #            predictor = rf_probs[,1],
+  #            levels = rev(levels(test_set$Class)))
+  #
+  # metadata <- data.frame(PID = test_set$PID, reviewID = test_set$reviewID)
+  #
+  # base_positives <- test_set$Class == 'include'
+  # base_negatives <- test_set$Class == 'exclude'
+  #
+  # test_positives <- rf_probs$include >= 0.5
+  # test_negatives <- rf_probs$exclude > 0.5
+  #
+  # TP <- sizeTrue(test_positives & base_positives)
+  # TN <- sizeTrue(test_negatives & base_negatives)
+  #
+  # FP <- sizeTrue(test_positives & base_negatives)
+  # FN <- sizeTrue(test_negatives & base_positives)
+  #
+  # recall <- TP / sizeTrue(base_positives) # most important, has to be close to 1
+  #
+  # accuracy <- (TP + TN) / (TP + TN + FP + FN) # not interesting
+  # precision <- TP / (TP + FP) # not interesting
+  #
+  # sensitivity <- TP / sizeTrue(base_positives) # most important, has to be close to 1 == recall
+  # specificity <- TN / sizeTrue(base_negatives) # not interesting
+  #
+  # F1 <- 2 * ((precision * recall) / (precision + recall)) # not interesting, will be terrible
+  #
+  # return(list(rf = rf, rf_probs = rf_probs, ROC = ROC, base_positives = base_positives, base_negatives = base_negatives,
+  #            test_positives = test_positives, test_negatives = test_negatives, TP = TP, TN = TN, FP = FP, FN = FN, recall = recall,
+  #            accuracy = accuracy, precision = precision, sensitivity = sensitivity, specificity = specificity, F1 = F1, metadata = metadata))
 
-  rf_probs <- predict(rf, prob_test_set, type = "prob")
-
-  ROC <- roc(response = test_set$Class,
-             predictor = rf_probs[,1],
-             levels = rev(levels(test_set$Class)))
-
-  metadata <- data.frame(PID = test_set$PID, reviewID = test_set$reviewID)
-
-  base_positives <- test_set$Class == 'include'
-  base_negatives <- test_set$Class == 'exclude'
-
-  test_positives <- rf_probs$include >= 0.5
-  test_negatives <- rf_probs$exclude > 0.5
-
-  TP <- sizeTrue(test_positives & base_positives)
-  TN <- sizeTrue(test_negatives & base_negatives)
-
-  FP <- sizeTrue(test_positives & base_negatives)
-  FN <- sizeTrue(test_negatives & base_positives)
-
-  recall <- TP / sizeTrue(base_positives) # most important, has to be close to 1
-
-  accuracy <- (TP + TN) / (TP + TN + FP + FN) # not interesting
-  precision <- TP / (TP + FP) # not interesting
-
-  sensitivity <- TP / sizeTrue(base_positives) # most important, has to be close to 1 == recall
-  specificity <- TN / sizeTrue(base_negatives) # not interesting
-
-  F1 <- 2 * ((precision * recall) / (precision + recall)) # not interesting, will be terrible
-
-  return(list(rf = rf, rf_probs = rf_probs, ROC = ROC, base_positives = base_positives, base_negatives = base_negatives,
-             test_positives = test_positives, test_negatives = test_negatives, TP = TP, TN = TN, FP = FP, FN = FN, recall = recall,
-             accuracy = accuracy, precision = precision, sensitivity = sensitivity, specificity = specificity, F1 = F1, metadata = metadata))
+  return(list(rf = rf))
 }

@@ -16,6 +16,13 @@ if (length(args) < 3) {
 project_name <- args[2]
 csv_name <- args[3]
 
+project_location <- getProjectFolder(project_name)
+
+selection_file <- "rf_selection.R"
+
+# Load 'includes' variable
+source(paste(project_location, selection_file, sep = "/"))
+
 # OVERWRITE CONFIG DEFAULTS
 clean_force <- FALSE
 
@@ -23,6 +30,16 @@ source("libraries/preprocessing.R")
 
 # Pre-process the corpus
 clean_corpus <- setupPreprocessing(project_name, csv_name)
+clean_corpus <- appendIncludes(clean_corpus, includes)
+
+suppressMessages(library(tm))
+
+# Remove empty rows
+dtm <- DocumentTermMatrix(clean_corpus)
+
+clean_corpus <- clean_corpus[unique(dtm$i)]
+
+rm(dtm)
 
 if (workflow_run_to == "cleaning") {
   stop()
@@ -30,10 +47,6 @@ if (workflow_run_to == "cleaning") {
 
 # FITTING -----------------------------------------------
 
-# Overwrite the defaults
-#fit_ks <- seq(2, 4, 1)
-
-project_location <- getProjectFolder(project_name)
 file_version <- getLastVersion("clean_corpus", project_location)
 
 source("interfaces/fit.R")
@@ -61,37 +74,12 @@ if (workflow_run_to == "fitting") {
 
 # RANDOM FOREST -----------------------------------------
 
-source("libraries/random-forest-builder.R")
+source("interfaces/forest-builder.R")
+source("interfaces/forest-probabilities.R")
 
-selection_file <- "rf_selection.R"
-
-# Load 'includes' variable
-source(paste(project_location, selection_file, sep = "/"))
-
-runSet <- function(dataset) {
-  results <- setupForest(dataset, includes, project_location, file_version, rf_fold, training_selection)
-
-  return(results)
-}
-
-#if (rf_parallel) {
-#  results <- mclapply(datasets, function(set) runSet(set), mc.cores = parallel_cores, mc.silent = parallel_silent)
-#} else {
-results <- list()
+rf <- list()
 
 for (dataset in datasets) {
-  results <- append(results, list(runSet(dataset)))
+  rf <- executeForest(dataset, project_name, clean_corpus)
+  probs <- probabilitiesForest(rf, dataset, clean_corpus, project_name)
 }
-#}
-
-# RANDOM FOREST ANALYSER --------------------------------
-
-source("libraries/random-forest-analyser.R")
-
-results <- setupForestAnalysis(project_location, file_version, rf_fold)
-
-# ANALYSIS -------------------------------
-
-#TODO
-
-#source("libraries/")
